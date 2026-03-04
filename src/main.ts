@@ -8,6 +8,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.use(express.urlencoded({ extended: true }));
+
+  console.log('OPENAI:', process.env.OPENAI_API_KEY);
+  console.log('TWILIO:', process.env.TWILIO_ACCOUNT_SID);
+
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
