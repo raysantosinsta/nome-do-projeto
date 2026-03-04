@@ -1,23 +1,20 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
-
 import { Controller, Post, Body, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
 import * as twilio from 'twilio';
 import axios from 'axios';
-import OpenAI from 'openai';
-import { toFile } from 'openai/uploads';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 @Controller('webhook/twilio')
 export class TwilioController {
-  private openai: OpenAI;
+  private genAI: GoogleGenerativeAI;
 
   constructor(private configService: ConfigService) {
-    this.openai = new OpenAI({
-      apiKey: this.configService.getOrThrow<string>('OPENAI_API_KEY'),
-    });
+    const apiKey = this.configService.getOrThrow<string>('GEMINI_API_KEY');
+    this.genAI = new GoogleGenerativeAI(apiKey);
   }
 
   @Post()
@@ -33,45 +30,42 @@ export class TwilioController {
 
         if (!contentType || !contentType.includes('audio')) {
           twiml.message('Envie apenas áudio 🎤');
-          res.type('text/xml');
-          return res.send(twiml.toString());
+          return res.type('text/xml').send(twiml.toString());
         }
 
         const accountSid =
           this.configService.getOrThrow<string>('TWILIO_ACCOUNT_SID');
-
         const authToken =
           this.configService.getOrThrow<string>('TWILIO_AUTH_TOKEN');
 
         const audioResponse = await axios.get(mediaUrl, {
           responseType: 'arraybuffer',
-          auth: {
-            username: accountSid,
-            password: authToken,
+          auth: { username: accountSid, password: authToken },
+        });
+
+        const base64Audio = Buffer.from(audioResponse.data).toString('base64');
+        const model = this.genAI.getGenerativeModel({
+          model: 'gemini-1.5-flash',
+        });
+
+        const result = await model.generateContent([
+          {
+            inlineData: {
+              mimeType: contentType,
+              data: base64Audio,
+            },
           },
-        });
+          { text: 'Transcreva este áudio em português.' },
+        ]);
 
-        const buffer = Buffer.from(audioResponse.data);
-
-        // Detecta extensão automaticamente
-        let extension = 'audio.ogg';
-        if (contentType.includes('mpeg')) extension = 'audio.mp3';
-        if (contentType.includes('mp4')) extension = 'audio.mp4';
-
-        const file = await toFile(buffer, extension);
-
-        const transcription = await this.openai.audio.transcriptions.create({
-          file,
-          model: 'whisper-1',
-        });
-
-        twiml.message(`Você disse: ${transcription.text}`);
+        twiml.message(`Você disse: ${result.response.text()}`);
       } else {
         twiml.message('Envie um áudio 🎤');
       }
     } catch (error: any) {
-      console.error('Erro completo:', error?.response?.data || error);
-      twiml.message('Erro ao processar o áudio.');
+      // Aqui o log agora deve mostrar erros do Google, não da OpenAI
+      console.error('Erro Gemini:', error);
+      twiml.message('Erro ao processar com Gemini.');
     }
 
     res.type('text/xml');
