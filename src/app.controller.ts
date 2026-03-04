@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+
 import { Controller, Post, Body, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
@@ -22,8 +23,6 @@ export class TwilioController {
     const twiml = new twilio.twiml.MessagingResponse();
 
     try {
-      console.log('Incoming body:', body);
-
       if (Number(body.NumMedia) > 0) {
         const mediaUrl = body.MediaUrl0;
         const contentType = body.MediaContentType0;
@@ -38,34 +37,65 @@ export class TwilioController {
         const authToken =
           this.configService.getOrThrow<string>('TWILIO_AUTH_TOKEN');
 
+        // Download do áudio
         const audioResponse = await axios.get(mediaUrl, {
           responseType: 'arraybuffer',
           auth: { username: accountSid, password: authToken },
         });
 
         const base64Audio = Buffer.from(audioResponse.data).toString('base64');
-        const model = this.genAI.getGenerativeModel({
-          model: 'gemini-1.5-flash',
-        });
 
-        const result = await model.generateContent([
-          {
-            inlineData: {
-              mimeType: contentType,
-              data: base64Audio,
-            },
-          },
-          { text: 'Transcreva este áudio em português.' },
-        ]);
+        // --- LÓGICA DE FALLBACK ---
+        // Lista de modelos para testar, do mais leve ao mais potente
+        const modelsToTry = [
+          'gemini-1.5-flash',
+          'gemini-1.5-flash-latest',
+          'gemini-1.5-pro',
+          'gemini-1.5-pro-latest',
+          'gemini-pro-vision', // Modelo mais antigo
+        ];
 
-        twiml.message(`Você disse: ${result.response.text()}`);
+        let transcription = '';
+        let success = false;
+
+        for (const modelName of modelsToTry) {
+          try {
+            console.log(`Tentando modelo: ${modelName}`);
+            const model = this.genAI.getGenerativeModel({ model: modelName });
+
+            const result = await model.generateContent([
+              {
+                inlineData: {
+                  mimeType: contentType,
+                  data: base64Audio,
+                },
+              },
+              { text: 'Transcreva este áudio em português.' },
+            ]);
+
+            transcription = result.response.text();
+            console.log(`Sucesso com o modelo: ${modelName}`);
+            success = true;
+            break; // Sai do loop se funcionar
+          } catch (err) {
+            console.warn(`Falha no modelo ${modelName}:`, err.message);
+            continue; // Tenta o próximo da lista
+          }
+        }
+
+        if (success) {
+          twiml.message(`Você disse: ${transcription}`);
+        } else {
+          twiml.message(
+            'Não consegui processar seu áudio com nenhum modelo Gemini disponível.',
+          );
+        }
       } else {
         twiml.message('Envie um áudio 🎤');
       }
     } catch (error: any) {
-      // Aqui o log agora deve mostrar erros do Google, não da OpenAI
-      console.error('Erro Gemini:', error);
-      twiml.message('Erro ao processar com Gemini.');
+      console.error('Erro Geral:', error);
+      twiml.message('Erro inesperado no servidor.');
     }
 
     res.type('text/xml');
